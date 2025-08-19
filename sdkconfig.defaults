@@ -1,0 +1,5 @@
+# Default serial port configuration
+CONFIG_ESPTOOLPY_PORT="/dev/cu.usbserial-2120"
+CONFIG_ESPTOOLPY_BAUD_115200B=y
+CONFIG_ESPTOOLPY_BAUD=115200
+ 
