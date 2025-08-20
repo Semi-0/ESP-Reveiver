@@ -17,12 +17,15 @@ bool MqttClient::connected_ = false;
 // ESP-IDF MQTT client handle
 static esp_mqtt_client_handle_t mqtt_client = nullptr;
 
-// Pure MQTT event handler - no logging
+// MQTT event handler with detailed logging
 void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
     
+    ESP_LOGI(TAG, "MQTT Event received: event_id=%d, base=%d", event_id, base);
+    
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED: Successfully connected to broker");
             MqttClient::connected_ = true;
             
             // Publish MQTT connected event
@@ -33,6 +36,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             break;
             
         case MQTT_EVENT_DISCONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED: Disconnected from broker");
             MqttClient::connected_ = false;
             
             // Publish MQTT disconnected event
@@ -43,6 +47,9 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             break;
             
         case MQTT_EVENT_DATA: {
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Received message on topic: %s", event->topic);
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Message length: %d", event->data_len);
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Message payload: %s", event->data);
             // Create message data
             MqttMessageData message_data;
             message_data.topic = std::string(event->topic, event->topic_len);
@@ -64,6 +71,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         }
             
         case MQTT_EVENT_ERROR:
+            ESP_LOGE(TAG, "MQTT_EVENT_ERROR: MQTT error occurred");
             MqttClient::connected_ = false;
             
             // Publish MQTT error event
@@ -74,14 +82,28 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             break;
             
         case MQTT_EVENT_SUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED: Successfully subscribed to topic");
+            break;
         case MQTT_EVENT_UNSUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED: Successfully unsubscribed from topic");
+            break;
         case MQTT_EVENT_PUBLISHED:
+            ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED: Message published successfully");
+            break;
         case MQTT_EVENT_BEFORE_CONNECT:
+            ESP_LOGI(TAG, "MQTT_EVENT_BEFORE_CONNECT: About to connect to broker");
+            break;
         case MQTT_EVENT_DELETED:
+            ESP_LOGI(TAG, "MQTT_EVENT_DELETED: MQTT client deleted");
+            break;
         case MQTT_EVENT_ANY:
+            ESP_LOGI(TAG, "MQTT_EVENT_ANY: Any MQTT event");
+            break;
         case MQTT_USER_EVENT:
+            ESP_LOGI(TAG, "MQTT_USER_EVENT: User-defined MQTT event");
+            break;
         default:
-            // Handle other events - no action needed
+            ESP_LOGW(TAG, "MQTT Unknown event: %d", event->event_id);
             break;
     }
 }
@@ -92,28 +114,37 @@ MqttConnectionResult MqttClient::initialize(const MqttConnectionData& connection
         mqtt_client = nullptr;
     }
     
-    // Configure MQTT client
+    // Configure MQTT client - try simpler configuration
     esp_mqtt_client_config_t mqtt_cfg = {};
     
-    // Build URI with port
-    std::string uri = "mqtt://" + connection_data.broker_host + ":" + std::to_string(connection_data.broker_port);
-    mqtt_cfg.broker.address.uri = uri.c_str();
-    mqtt_cfg.broker.address.transport = MQTT_TRANSPORT_OVER_TCP;
+    // Build URI with port - store it as a static string to keep it alive
+    static std::string uri_storage;
+    uri_storage = "mqtt://" + connection_data.broker_host + ":" + std::to_string(connection_data.broker_port);
+    ESP_LOGI(TAG, "Initializing MQTT client with URI: %s", uri_storage.c_str());
+    ESP_LOGI(TAG, "Client ID: %s", connection_data.client_id.c_str());
+    
+    // Use minimal configuration
+    mqtt_cfg.broker.address.uri = uri_storage.c_str();
     mqtt_cfg.credentials.client_id = connection_data.client_id.c_str();
     
-    // Set connection timeout
-    mqtt_cfg.session.keepalive = 60;
-    mqtt_cfg.session.disable_clean_session = 0;
-    mqtt_cfg.session.last_will.topic = nullptr;
-    mqtt_cfg.session.last_will.msg = nullptr;
-    mqtt_cfg.session.last_will.qos = 1;
-    mqtt_cfg.session.last_will.retain = 0;
+    ESP_LOGI(TAG, "Using minimal MQTT configuration");
     
     // Create MQTT client
+    ESP_LOGI(TAG, "About to call esp_mqtt_client_init with config:");
+    ESP_LOGI(TAG, "  URI: %s", mqtt_cfg.broker.address.uri);
+    ESP_LOGI(TAG, "  Transport: %d", mqtt_cfg.broker.address.transport);
+    ESP_LOGI(TAG, "  Client ID: %s", mqtt_cfg.credentials.client_id);
+    ESP_LOGI(TAG, "  Keepalive: %d", mqtt_cfg.session.keepalive);
+    ESP_LOGI(TAG, "  Network timeout: %d", mqtt_cfg.network.timeout_ms);
+    
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     if (mqtt_client == nullptr) {
-        return MqttConnectionResult(false, "Failed to initialize MQTT client", -1);
+        ESP_LOGE(TAG, "esp_mqtt_client_init returned NULL - this usually means memory allocation failed or invalid config");
+        ESP_LOGE(TAG, "Check if URI format is correct: %s", mqtt_cfg.broker.address.uri);
+        ESP_LOGE(TAG, "Check if client ID is valid: %s", mqtt_cfg.credentials.client_id);
+        return MqttConnectionResult(false, "Failed to initialize MQTT client - esp_mqtt_client_init returned NULL", -1);
     }
+    ESP_LOGI(TAG, "MQTT client initialized successfully, handle: %p", mqtt_client);
     
     // Register event handler
     esp_err_t err = esp_mqtt_client_register_event(mqtt_client, static_cast<esp_mqtt_event_id_t>(ESP_EVENT_ANY_ID), mqtt_event_handler, nullptr);
@@ -137,10 +168,14 @@ MqttConnectionResult MqttClient::connect(const MqttConnectionData& connection_da
     }
     
     // Start MQTT client
+    ESP_LOGI(TAG, "Starting MQTT client with handle: %p", mqtt_client);
     esp_err_t err = esp_mqtt_client_start(mqtt_client);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_mqtt_client_start failed with error: %s (code: %d)", esp_err_to_name(err), err);
+        ESP_LOGE(TAG, "This usually means the client couldn't connect to the broker");
         return MqttConnectionResult(false, "Failed to start MQTT client", err);
     }
+    ESP_LOGI(TAG, "MQTT client started successfully - connection attempt initiated");
     
     return MqttConnectionResult(true);
 }
@@ -162,8 +197,9 @@ bool MqttClient::subscribe(const std::string& topic, int qos) {
     if (!isConnected()) {
         return false;
     }
-    
+    ESP_LOGI(TAG, "Subscribing to topic: %s", topic.c_str());
     esp_err_t err = esp_mqtt_client_subscribe(mqtt_client, topic.c_str(), qos);
+
     if (err != ESP_OK) {
         return false;
     }

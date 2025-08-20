@@ -26,11 +26,11 @@ std::string get_esp32_device_id() {
 
 // Get MQTT control topic with device ID
 std::string get_mqtt_control_topic() {
-    return std::string(MQTT_CONTROL_TOPIC) + "/" + get_esp32_device_id();
+    return get_esp32_device_id() + "/control";
 }
 
 // Get MQTT status topic with device ID
 std::string get_mqtt_status_topic() {
-    return std::string(MQTT_STATUS_TOPIC) + "/" + get_esp32_device_id();
+    return get_esp32_device_id() + "/status";
 }
 

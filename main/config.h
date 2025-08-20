@@ -29,6 +29,9 @@ std::string get_mqtt_response_topic();
 // Application settings
 extern const char* APP_TAG;
 
+// mDNS settings
+extern const char* MDNS_SERVICE_NAME;
+
 // Event Bus Configuration
 #define EVENT_BUS_TASK_STACK_SIZE 4096
 #define EVENT_BUS_TASK_PRIORITY (tskIDLE_PRIORITY + 2)

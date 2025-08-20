@@ -103,6 +103,32 @@ public:
             }, name, stack, new TaskPack{workerFn, ctx}, prio, nullptr);
         };
     }
+    
+    // New version that passes event data to worker function
+    Flow async_blocking_with_event(const char* name,
+                        std::function<bool(const Event& trigger_event, void** out)> workerFn,
+                        const Flow& onOk,
+                        const Flow& onErr,
+                        uint32_t stack=4096,
+                        UBaseType_t prio=tskIDLE_PRIORITY+1) {
+        return [=, this](const Event& trigger, IEventBus& /*bus*/) {
+            // Pack everything for continuation including the trigger event
+            struct AsyncCtx { Flow onOk; Flow onErr; Event original; FlowGraph* fg; };
+            struct TaskPackWithEvent { std::function<bool(const Event&, void**)> fn; void* ctx; Event trigger_event; };
+            auto* ctx = new AsyncCtx{onOk, onErr, trigger, const_cast<FlowGraph*>(this)};
+            xTaskCreate([](void* arg){
+                auto* p = static_cast<TaskPackWithEvent*>(arg);
+                void* payload=nullptr;
+                bool ok = p->fn(p->trigger_event, &payload);
+                // Post result back into bus via synthetic event:
+                auto* async_ctx = static_cast<AsyncCtx*>(p->ctx);
+                Event r{TOPIC__ASYNC_RESULT, ok?1:0, new ResultPack{payload, p->ctx}};
+                async_ctx->fg->bus_.publish(r);
+                delete p;
+                vTaskDelete(nullptr);
+            }, name, stack, new TaskPackWithEvent{workerFn, ctx, trigger}, prio, nullptr);
+        };
+    }
 
 private:
     // Continuation payload

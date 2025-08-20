@@ -51,3 +51,6 @@ std::string get_mqtt_response_topic() {
 
 // Application settings
 const char* APP_TAG = "MQTT_RECEIVER";
+
+// mDNS settings
+const char* MDNS_SERVICE_NAME = "Local MQTT Controller";

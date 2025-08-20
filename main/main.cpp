@@ -173,16 +173,107 @@ void centralized_logging_handler(const Event& e, void* user) {
 
 // Real mDNS query worker - pure execution only
 static bool mdns_query_worker(void** out) {
-    // For now, use a hardcoded test broker until mDNS API is stable
-    char* host = strdup("test.mosquitto.org");
+    // Give mDNS some time to initialize properly after WiFi connection
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    // Query for MQTT service using mDNS
+    mdns_result_t* results = nullptr;
+    esp_err_t err = mdns_query_ptr(MDNS_SERVICE_TYPE, MDNS_PROTOCOL, MDNS_QUERY_TIMEOUT_MS, MDNS_MAX_RESULTS, &results);
+    
+    if (err != ESP_OK) {
+        char* host = strdup("10.0.0.161");
+        *out = host;
+        return true;
+    }
+    
+    if (results == nullptr) {
+        char* host = strdup("10.0.0.161");
+        *out = host;
+        return true;
+    }
+    
+    // Iterate through the linked list of results
+    mdns_result_t* r = results;
+    while (r) {
+        // Check if this is our target service
+        if (r->instance_name && strcmp(r->instance_name, MDNS_SERVICE_NAME) == 0) {
+            if (r->hostname) {
+                // Check if hostname is already an IP address
+                if (strchr(r->hostname, '.') != nullptr && isdigit(r->hostname[0])) {
+                    // It looks like an IP address, use it directly
+                    char* ip_address = strdup(r->hostname);
+                    *out = ip_address;
+                    
+                    mdns_query_results_free(results);
+                    return true;
+                } else {
+                    // It's a hostname, try to resolve it
+                    // Try to get the IP address from the service record directly
+                    if (r->addr && r->addr->addr.type == ESP_IPADDR_TYPE_V4) {
+                        // Convert IP address to string
+                        char ip_str[16];
+                        snprintf(ip_str, sizeof(ip_str), "%lu.%lu.%lu.%lu", 
+                                 r->addr->addr.u_addr.ip4.addr & 0xFF,
+                                 (r->addr->addr.u_addr.ip4.addr >> 8) & 0xFF,
+                                 (r->addr->addr.u_addr.ip4.addr >> 16) & 0xFF,
+                                 (r->addr->addr.u_addr.ip4.addr >> 24) & 0xFF);
+                        
+                        // Allocate and copy IP address
+                        char* ip_address = strdup(ip_str);
+                        *out = ip_address;
+                        
+                        mdns_query_results_free(results);
+                        return true;
+                    } else {
+                        // Try to query for the IP address of this hostname
+                        esp_ip4_addr_t addr;
+                        esp_err_t addr_err = mdns_query_a(r->hostname, MDNS_QUERY_TIMEOUT_MS, &addr);
+                        
+                        if (addr_err == ESP_OK) {
+                            // Convert IP address to string
+                            char ip_str[16];
+                            snprintf(ip_str, sizeof(ip_str), "%lu.%lu.%lu.%lu", 
+                                     addr.addr & 0xFF,
+                                     (addr.addr >> 8) & 0xFF,
+                                     (addr.addr >> 16) & 0xFF,
+                                     (addr.addr >> 24) & 0xFF);
+                            
+                            // Allocate and copy IP address
+                            char* ip_address = strdup(ip_str);
+                            *out = ip_address;
+                            
+                            mdns_query_results_free(results);
+                            return true;
+                        } else {
+                            // Fallback to hostname with .local suffix
+                            std::string full_hostname = std::string(r->hostname) + ".local";
+                            char* hostname = strdup(full_hostname.c_str());
+                            *out = hostname;
+                            
+                            mdns_query_results_free(results);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        r = r->next;
+    }
+    
+    // If no matching service found, use fallback to known broker IP
+    char* host = strdup("10.0.0.161");
+    mdns_query_results_free(results);
     *out = host;
     return true;
 }
 
-// MQTT connection worker - pure execution only
-static bool mqtt_connection_worker(void** out) {
-    const char* host = static_cast<const char*>(*out);
+// MQTT connection worker that receives hostname from event - pure execution only
+static bool mqtt_connection_worker_with_event(const Event& trigger_event, void** out) {
+    const char* host = static_cast<const char*>(trigger_event.ptr);
+    ESP_LOGI("MQTT_WORKER_EVENT", "Attempting MQTT connection to host from event: %s", host ? host : "NULL");
+    
     if (!host) {
+        ESP_LOGE("MQTT_WORKER_EVENT", "No hostname provided in event");
         return false;
     }
     
@@ -193,17 +284,12 @@ static bool mqtt_connection_worker(void** out) {
     auto result = MqttClient::connect(connection_data);
     
     if (result.success) {
-        // Subscribe to control topic
-        std::string control_topic = get_mqtt_control_topic();
-        if (MqttClient::subscribe(control_topic, 0)) {
-            // Store connection data for later use
-            auto* conn_data = new MqttConnectionData(connection_data);
-            *out = conn_data;
-            return true;
-        } else {
-            return false;
-        }
+        // Store connection data for later use
+        auto* conn_data = new MqttConnectionData(connection_data);
+        *out = conn_data;
+        return true;
     } else {
+        ESP_LOGE("MQTT_WORKER_EVENT", "Failed to connect: %s", result.error_message.c_str());
         return false;
     }
 }
@@ -211,7 +297,7 @@ static bool mqtt_connection_worker(void** out) {
 // ===== WIFI EVENT HANDLERS =====
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                              int32_t event_id, void* event_data) {
+                         int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -222,6 +308,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         (void)event_data; // Unused but required by interface
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        
+        // Initialize mDNS now that we have network connectivity
+        ESP_LOGI("WIFI_EVENT", "Initializing mDNS after IP acquisition...");
+        esp_err_t mdns_ret = mdns_init();
+        ESP_LOGI("WIFI_EVENT", "mDNS init result: %s", esp_err_to_name(mdns_ret));
+        
+        if (mdns_ret == ESP_OK || mdns_ret == ESP_ERR_INVALID_STATE) {
+            std::string hostname = get_esp32_device_id();
+            esp_err_t hostname_ret = mdns_hostname_set(hostname.c_str());
+            ESP_LOGI("WIFI_EVENT", "mDNS hostname set result: %s for hostname: %s", esp_err_to_name(hostname_ret), hostname.c_str());
+        }
     }
 }
 
@@ -293,7 +390,7 @@ void timer_execution_handler(const Event& e, void* user) {
     // Check if we should publish device info (pure function)
     if (shouldPublishDeviceInfo(last_publish_time, current_time, DEVICE_STATUS_PUBLISH_INTERVAL_MS / 1000)) {
         // Check if MQTT is connected
-        if (MqttClient::isConnected()) {
+    if (MqttClient::isConnected()) {
             // Create device status using pure function
             std::string status_json = SystemStateManager::createDeviceStatusJson();
             
@@ -329,11 +426,7 @@ extern "C" void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize mDNS
-    esp_err_t mdns_ret = mdns_init();
-    if (mdns_ret != ESP_OK && mdns_ret != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(mdns_ret);
-    }
+    // mDNS will be initialized after WiFi connection
 
     // Initialize GPIO pins
     DeviceMonitor::initializePins();
@@ -354,7 +447,11 @@ extern "C" void app_main(void) {
     G.when(TOPIC_WIFI_CONNECTED,
         G.async_blocking("mdns-query", mdns_query_worker,
             // onOk → publish MDNS_FOUND with hostname
-            FlowGraph::publish(TOPIC_MDNS_FOUND),
+            [](const Event& e, IEventBus& bus) {
+                const char* hostname = static_cast<const char*>(e.ptr);
+                ESP_LOGI("FLOW1", "Publishing MDNS_FOUND with hostname: %s", hostname ? hostname : "NULL");
+                bus.publish(Event{TOPIC_MDNS_FOUND, 0, hostname ? strdup(hostname) : nullptr});
+            },
             // onErr → publish MDNS_FAILED and system error
             FlowGraph::seq(
                 FlowGraph::publish(TOPIC_MDNS_FAILED),
@@ -365,7 +462,7 @@ extern "C" void app_main(void) {
 
     // Flow 2: When mDNS succeeds, connect to MQTT
     G.when(TOPIC_MDNS_FOUND,
-        G.async_blocking("mqtt-connect", mqtt_connection_worker,
+        G.async_blocking_with_event("mqtt-connect", mqtt_connection_worker_with_event,
             // onOk → publish MQTT_CONNECTED
             FlowGraph::publish(TOPIC_MQTT_CONNECTED, 1, nullptr),
             // onErr → publish MQTT_DISCONNECTED and system error
@@ -374,6 +471,22 @@ extern "C" void app_main(void) {
                 FlowGraph::publish(TOPIC_SYSTEM_ERROR, 6, nullptr)
             )
         )
+    );
+
+    // Flow 2.5: When MQTT connects, subscribe to control topic
+    G.when(TOPIC_MQTT_CONNECTED,
+        FlowGraph::tap([](const Event& e) {
+            // Subscribe to control topic
+            std::string control_topic = get_mqtt_control_topic();
+            ESP_LOGI("FLOW2.5", "Subscribing to control topic: %s", control_topic.c_str());
+            
+            if (MqttClient::subscribe(control_topic, 1)) {
+                ESP_LOGI("FLOW2.5", "Subscription request sent successfully");
+            } else {
+                ESP_LOGE("FLOW2.5", "Failed to send subscription request");
+                BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
+            }
+        })
     );
 
     // Flow 3: When mDNS fails, use fallback MQTT broker
