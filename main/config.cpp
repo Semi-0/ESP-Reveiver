@@ -5,8 +5,8 @@
 #include <iomanip>
 
 // WiFi settings
-const char* WIFI_SSID = "SD & FM";
-const char* WIFI_PASSWORD = "74415347743935936577";
+const char* WIFI_SSID = "HHP-BB076BD1A63B";
+const char* WIFI_PASSWORD = "1AA478EDB658";
 const int UDP_LOCAL_PORT = 12345;
 
 // Machine configuration

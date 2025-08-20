@@ -330,7 +330,10 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     // Initialize mDNS
-    ESP_ERROR_CHECK(mdns_init());
+    esp_err_t mdns_ret = mdns_init();
+    if (mdns_ret != ESP_OK && mdns_ret != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(mdns_ret);
+    }
 
     // Initialize GPIO pins
     DeviceMonitor::initializePins();
