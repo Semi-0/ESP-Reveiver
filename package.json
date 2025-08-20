@@ -1,0 +1,16 @@
+{
+  "name": "mqtt-receiver",
+  "version": "1.0.0",
+  "description": "ESP32 MQTT receiver with event bus architecture",
+  "scripts": {
+    "build:test": "./test/build_mqtt_test.sh",
+    "test:mqtt": "./test/build/test_mqtt_integration",
+    "test": "npm run build:test && npm run test:mqtt",
+    "build:eventbus": "cd eventbus && cmake -B build && cmake --build build",
+    "flash": "./flash.sh",
+    "monitor": "./monitor.sh"
+  },
+  "keywords": ["esp32", "mqtt", "event-bus", "embedded"],
+  "author": "",
+  "license": "MIT"
+}

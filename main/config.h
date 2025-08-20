@@ -29,4 +29,22 @@ std::string get_mqtt_response_topic();
 // Application settings
 extern const char* APP_TAG;
 
+// Event Bus Configuration
+#define EVENT_BUS_TASK_STACK_SIZE 4096
+#define EVENT_BUS_TASK_PRIORITY (tskIDLE_PRIORITY + 2)
+
+// mDNS Configuration
+#define MDNS_SERVICE_TYPE "_mqtt"
+#define MDNS_PROTOCOL "_tcp"
+#define MDNS_QUERY_TIMEOUT_MS 3000
+#define MDNS_MAX_RESULTS 20
+
+// System Configuration
+#define DEVICE_STATUS_PUBLISH_INTERVAL_MS 10000
+#define MAIN_LOOP_DELAY_MS 1000
+
+// MQTT Configuration constants
+#define MQTT_BROKER_HOST "192.168.1.100"
+#define MQTT_BROKER_PORT 1883
+
 #endif // CONFIG_H

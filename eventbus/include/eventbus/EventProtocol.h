@@ -1,0 +1,28 @@
+#pragma once
+#include <stdint.h>
+
+// Reserve hot topics 0..31 for bitmask (fast path)
+enum : uint16_t {
+    TOPIC_WIFI_CONNECTED = 0,
+    TOPIC_WIFI_DISCONNECTED = 1,
+    TOPIC_MDNS_FOUND     = 2,
+    TOPIC_MDNS_FAILED    = 3,
+    TOPIC_MQTT_CONNECTED = 4,
+    TOPIC_MQTT_DISCONNECTED = 5,
+    TOPIC_MQTT_MESSAGE   = 6,
+    TOPIC_PIN_SET        = 7,
+    TOPIC_PIN_READ       = 8,
+    TOPIC_SYSTEM_ERROR   = 9,
+    TOPIC_SYSTEM_WARNING = 10,
+    TOPIC_TIMER          = 11,
+    TOPIC_STATUS_PUBLISH_SUCCESS = 12,
+
+    // Reserved internal topic for async continuation:
+    TOPIC__ASYNC_RESULT  = 31
+};
+
+constexpr uint32_t bit(uint16_t topic) {
+    return (topic < 32) ? (1u << topic) : 0u;
+}
+
+constexpr uint32_t MASK_ALL = 0xFFFFFFFFu;

@@ -183,3 +183,44 @@ void MessageProcessor::process_motor_command(const std::vector<std::string>& par
     // Legacy function - not implemented
 }
 
+// ===== DEVICE COMMAND PROCESSING =====
+
+DeviceCommandParseResult MessageProcessor::convertToDeviceCommands(const ParseResult& parse_result) {
+    if (!parse_result.success) {
+        return DeviceCommandParseResult::failure_result(parse_result.error_message);
+    }
+    
+    std::vector<DevicePinCommand> device_commands;
+    
+    for (const auto& pin_cmd : parse_result.commands) {
+        DeviceCommandType device_type;
+        std::string description;
+        
+        switch (pin_cmd.type) {
+            case CommandType::DIGITAL:
+                device_type = DeviceCommandType::PIN_SET;
+                description = "Set digital pin " + std::to_string(pin_cmd.pin) + " to " + std::to_string(pin_cmd.value);
+                break;
+            case CommandType::ANALOG:
+                device_type = DeviceCommandType::PIN_SET;
+                description = "Set analog pin " + std::to_string(pin_cmd.pin) + " to " + std::to_string(pin_cmd.value);
+                break;
+            default:
+                return DeviceCommandParseResult::failure_result("Unknown command type");
+        }
+        
+        DevicePinCommand device_cmd(device_type, pin_cmd.pin, pin_cmd.value, description);
+        device_commands.push_back(device_cmd);
+    }
+    
+    return DeviceCommandParseResult::success_result(device_commands);
+}
+
+DeviceCommandParseResult MessageProcessor::processMessageToDeviceCommands(const std::string& message) {
+    // Parse the JSON message first
+    auto parse_result = parse_json_message(message);
+    
+    // Convert to device commands
+    return convertToDeviceCommands(parse_result);
+}
+

@@ -1,7 +1,7 @@
 #ifndef APP_MQTT_CLIENT_H
 #define APP_MQTT_CLIENT_H
 
-#include "mqtt_client.h"
+#include "mqtt_client.h"  // ESP-IDF MQTT client header
 #include "esp_event.h"
 #include <functional>
 #include <string>
