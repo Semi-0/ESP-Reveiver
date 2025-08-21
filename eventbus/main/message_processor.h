@@ -30,3 +30,4 @@ public:
     static DeviceCommand createDeviceCommandFromJson(const std::string& json_command);
 };
 
+

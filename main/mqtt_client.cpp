@@ -83,6 +83,12 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             
         case MQTT_EVENT_SUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED: Successfully subscribed to topic");
+            
+            // Publish MQTT subscribed event
+            if (MqttClient::event_bus_) {
+                Event subscribed_event{TOPIC_MQTT_SUBSCRIBED, 1, nullptr};
+                MqttClient::event_bus_->publish(subscribed_event);
+            }
             break;
         case MQTT_EVENT_UNSUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED: Successfully unsubscribed from topic");

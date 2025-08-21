@@ -94,3 +94,4 @@ struct DeviceStatus {
         : device_id(id), status(s), uptime_seconds(uptime) {}
 };
 
+

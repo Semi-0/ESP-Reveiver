@@ -20,6 +20,7 @@ enum : uint16_t {
     TOPIC_SYSTEM_WARNING = 14,
     TOPIC_TIMER          = 15,
     TOPIC_STATUS_PUBLISH_SUCCESS = 16,
+    TOPIC_MQTT_SUBSCRIBED = 17,
 
     // Reserved internal topic for async continuation:
     TOPIC__ASYNC_RESULT  = 31

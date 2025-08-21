@@ -59,6 +59,9 @@ ParseResult MessageProcessor::parse_json_message(const std::string& message) {
         return result;
     }
 
+    // Support both single commands and arrays of commands
+    // Single: {"type": "digital", "pin": 2, "value": 1}
+    // Array: [{"type": "digital", "pin": 2, "value": 1}, {"type": "digital", "pin": 3, "value": 0}]
     if (cJSON_IsArray(root)) {
         cJSON* item = nullptr;
         cJSON_ArrayForEach(item, root) {

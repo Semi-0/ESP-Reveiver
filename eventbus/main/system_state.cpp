@@ -74,3 +74,4 @@ void SystemStateManager::reset() {
     ESP_LOGI(TAG, "System state reset");
 }
 
+

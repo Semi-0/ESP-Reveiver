@@ -148,3 +148,4 @@ DeviceCommand MessageProcessor::createDeviceCommandFromJson(const std::string& j
     return cmd;
 }
 
+

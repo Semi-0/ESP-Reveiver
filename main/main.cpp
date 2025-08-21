@@ -99,6 +99,11 @@ void centralized_logging_handler(const Event& e, void* user) {
             SystemStateManager::updateMqttState(false);
             break;
             
+        case TOPIC_MQTT_SUBSCRIBED:
+            event_name = "MQTT Subscribed";
+            log_message = "Successfully subscribed to MQTT topic";
+            break;
+            
         case TOPIC_MQTT_MESSAGE:
             event_name = "MQTT Message";
             {
@@ -350,6 +355,10 @@ static void wifi_init_sta() {
     strcpy((char*)wifi_config.sta.password, WIFI_PASSWORD);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    
+    // Disable WiFi auto sleep to maintain stable connection
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
@@ -449,7 +458,6 @@ extern "C" void app_main(void) {
             // onOk → publish MDNS_FOUND with hostname
             [](const Event& e, IEventBus& bus) {
                 const char* hostname = static_cast<const char*>(e.ptr);
-                ESP_LOGI("FLOW1", "Publishing MDNS_FOUND with hostname: %s", hostname ? hostname : "NULL");
                 bus.publish(Event{TOPIC_MDNS_FOUND, 0, hostname ? strdup(hostname) : nullptr});
             },
             // onErr → publish MDNS_FAILED and system error
@@ -478,12 +486,8 @@ extern "C" void app_main(void) {
         FlowGraph::tap([](const Event& e) {
             // Subscribe to control topic
             std::string control_topic = get_mqtt_control_topic();
-            ESP_LOGI("FLOW2.5", "Subscribing to control topic: %s", control_topic.c_str());
             
-            if (MqttClient::subscribe(control_topic, 1)) {
-                ESP_LOGI("FLOW2.5", "Subscription request sent successfully");
-            } else {
-                ESP_LOGE("FLOW2.5", "Failed to send subscription request");
+            if (!MqttClient::subscribe(control_topic, 1)) {
                 BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
             }
         })

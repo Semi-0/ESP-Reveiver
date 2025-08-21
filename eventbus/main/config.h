@@ -45,3 +45,4 @@ std::string get_esp32_device_id();
 std::string get_mqtt_control_topic();
 std::string get_mqtt_status_topic();
 
+
