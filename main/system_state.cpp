@@ -69,6 +69,28 @@ std::string SystemStateManager::createDeviceStatusJson() {
     return json.str();
 }
 
+std::string SystemStateManager::createOnlineJson() {
+    std::string device_id = get_esp32_device_id();
+    
+    std::ostringstream json;
+    json << "{";
+    json << "\"device_id\":\"" << device_id << "\",";
+    json << "\"status\":\"online\",";
+    json << "\"safe_mode\":" << (current_state_.safe_mode ? "true" : "false");
+    json << "}";
+    
+    return json.str();
+}
+
+void SystemStateManager::setSafe(bool safe) {
+    current_state_.safe_mode = safe;
+    ESP_LOGI(TAG, "Safe mode %s", safe ? "entered" : "exited");
+}
+
+bool SystemStateManager::isSafe() {
+    return current_state_.safe_mode;
+}
+
 void SystemStateManager::reset() {
     current_state_ = SystemState();
     ESP_LOGI(TAG, "System state reset");

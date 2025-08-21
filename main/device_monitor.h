@@ -31,6 +31,9 @@ public:
     
     // Pure function to create failure result
     static DeviceCommandResult createFailureResult(const DevicePinCommand& command, const std::string& error);
+    
+    // Safe mode: set all outputs to safe state
+    static void allOutputsSafe();
 };
 
 #endif // DEVICE_MONITOR_H

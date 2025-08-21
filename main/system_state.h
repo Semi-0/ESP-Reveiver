@@ -19,6 +19,11 @@ public:
     
     // Create device status JSON
     static std::string createDeviceStatusJson();
+    static std::string createOnlineJson();
+    
+    // Safe mode management
+    static void setSafe(bool safe);
+    static bool isSafe();
     
     // Reset system state
     static void reset();

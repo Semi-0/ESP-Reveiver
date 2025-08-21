@@ -22,6 +22,13 @@ enum : uint16_t {
     TOPIC_STATUS_PUBLISH_SUCCESS = 16,
     TOPIC_MQTT_SUBSCRIBED = 17,
 
+    // Recovery and Safe Mode Topics
+    TOPIC_RETRY_RESOLVE = 2001,
+    TOPIC_SAFE_MODE_ENTER,
+    TOPIC_SAFE_MODE_EXIT,
+    TOPIC_BROKER_PERSISTED,
+    TOPIC_LINK_READY,
+
     // Reserved internal topic for async continuation:
     TOPIC__ASYNC_RESULT  = 31
 };

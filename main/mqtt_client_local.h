@@ -35,7 +35,7 @@ public:
     static bool subscribe(const std::string& topic, int qos = 0);
     
     // Publish message
-    static bool publish(const std::string& topic, const std::string& message, int qos = 0);
+    static bool publish(const std::string& topic, const std::string& message, int qos = 0, bool retain = false);
     
     // Set message callback
     static void setMessageCallback(std::function<void(const MqttMessageData&)> callback);

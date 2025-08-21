@@ -25,6 +25,7 @@ extern const char* MQTT_PASSWORD;
 std::string get_mqtt_status_topic();
 std::string get_mqtt_control_topic();
 std::string get_mqtt_response_topic();
+std::string get_mqtt_safe_topic();
 
 // Application settings
 extern const char* APP_TAG;
@@ -49,5 +50,9 @@ extern const char* MDNS_SERVICE_NAME;
 // MQTT Configuration constants
 #define MQTT_BROKER_HOST "192.168.1.100"
 #define MQTT_BROKER_PORT 1883
+
+// Recovery and Safe Mode Configuration
+#define SAFE_AUTO_EXIT_ON_CONNECT 1  // set to 0 to keep conservative behavior
+#define MAX_PAYLOAD_LOG_LENGTH 128   // truncate noisy payload logs unless DEBUG
 
 #endif // CONFIG_H

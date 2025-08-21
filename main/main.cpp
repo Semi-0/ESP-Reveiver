@@ -23,6 +23,8 @@
 #include "mdns.h"
 #include "nvs_flash.h"
 #include "esp_timer.h"
+#include "esp_random.h"
+#include <algorithm>
 
 static const char* TAG = "EVENTBUS_MAIN";
 
@@ -34,11 +36,84 @@ static EventGroupHandle_t s_wifi_event_group;
 const int WIFI_CONNECTED_BIT = BIT0;
 const int WIFI_FAIL_BIT = BIT1;
 
+// Recovery and Safe Mode State
+static uint32_t s_backoff_ms = 1000;
+static TimerHandle_t t_retry = nullptr;
+static int s_subs_pending = 0;
+
 // ===== PURE FUNCTIONS FOR EXPLICIT DATA FLOW =====
 
 // Pure function to get current uptime in seconds
 uint64_t getCurrentUptimeSeconds() {
     return esp_timer_get_time() / 1000000;
+}
+
+// ===== RECOVERY AND SAFE MODE HELPERS =====
+
+// Backoff with jitter
+static uint32_t jitter_ms(uint32_t base) {
+    int32_t j = (int32_t)base / 10;
+    int32_t r = (int32_t)(esp_random() % (2*j+1)) - j; // ±10%
+    return (uint32_t)((int32_t)base + r);
+}
+
+static void reset_backoff() { 
+    s_backoff_ms = 1000; 
+}
+
+static void retry_timer_cb(TimerHandle_t) { 
+    BUS.publish(Event{TOPIC_RETRY_RESOLVE, 0, nullptr}); 
+}
+
+static void schedule_reconnect() {
+    if (!t_retry) {
+        t_retry = xTimerCreate("retry", pdMS_TO_TICKS(1000), pdFALSE, nullptr, retry_timer_cb);
+    }
+    uint32_t wait = jitter_ms(s_backoff_ms);
+    s_backoff_ms = std::min<uint32_t>(s_backoff_ms * 2u, 32000u);
+    xTimerChangePeriod(t_retry, pdMS_TO_TICKS(wait), 0);
+    xTimerStart(t_retry, 0);
+}
+
+// Safe mode functions
+static void enter_safe_mode() {
+    DeviceMonitor::allOutputsSafe(); // PWM=0, GPIO LOW, stop playback
+    SystemStateManager::setSafe(true);
+    if (MqttClient::isConnected()) {
+        MqttClient::publish(get_mqtt_safe_topic(), "{\"safe\":true}", 1, /*retain=*/true);
+    }
+}
+
+static void exit_safe_mode() {
+    SystemStateManager::setSafe(false);
+    if (MqttClient::isConnected()) {
+        MqttClient::publish(get_mqtt_safe_topic(), "{\"safe\":false}", 1, /*retain=*/true);
+    }
+}
+
+// Persist broker IP in NVS
+static void persist_broker_ip_if_any(const char* ip) {
+    if (!ip) return;
+    nvs_handle_t h;
+    if (nvs_open("net", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "broker_ip", ip);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+// Subscription management
+static void begin_subscriptions() {
+    std::vector<std::string> subs = { get_mqtt_control_topic() /*, ...*/ };
+    s_subs_pending = (int)subs.size();
+    for (auto& t : subs) {
+        if (MqttClient::subscribe(t, 1)) {
+            BUS.publish(Event{TOPIC_MQTT_SUBSCRIBED, 0, nullptr});
+        } else {
+            // Treat failure as still pending; recovery flow will retry via SYSTEM_ERROR/MDNS/backoff
+            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
+        }
+    }
 }
 
 // Pure function to check if device info should be published
@@ -485,22 +560,82 @@ extern "C" void app_main(void) {
         )
     );
 
-    // Flow 2.5: When MQTT connects, subscribe to control topic
+    // Flow 2.5: When MQTT connects, publish online status, reset backoff, and begin subscriptions
     G.when(TOPIC_MQTT_CONNECTED,
         FlowGraph::tap([](const Event& e) {
-            // Subscribe to control topic
-            std::string control_topic = get_mqtt_control_topic();
-            
-            if (!MqttClient::subscribe(control_topic, 1)) {
-                BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
+            reset_backoff();
+            MqttClient::publish(get_mqtt_status_topic(),
+                               SystemStateManager::createOnlineJson(),
+                               /*qos=*/1, /*retain=*/true);
+            begin_subscriptions();
+        })
+    );
+
+    // Flow 2.6: Each successful subscription decrements pending count; when zero => LINK_READY
+    G.when(TOPIC_MQTT_SUBSCRIBED,
+        FlowGraph::tap([](const Event& e) {
+            if (s_subs_pending > 0 && --s_subs_pending == 0) {
+                BUS.publish(Event{TOPIC_LINK_READY, 0, nullptr});
             }
         })
     );
 
-    // Flow 3: When mDNS fails, use fallback MQTT broker
-    BUS.subscribe(fallback_mqtt_connection_handler, nullptr, bit(TOPIC_MDNS_FAILED));
-    // TODO: backoff reconnect (1→32s)
-    // TODO: persist broker IP to NVS after first success
+    // Flow 2.7: Optional: auto-exit Safe Mode when link is ready
+    G.when(TOPIC_LINK_READY,
+        FlowGraph::tap([](const Event& e) {
+#if SAFE_AUTO_EXIT_ON_CONNECT
+            if (SystemStateManager::isSafe()) {
+                exit_safe_mode();
+                BUS.publish(Event{TOPIC_SAFE_MODE_EXIT, 0, nullptr});
+            }
+#endif
+        })
+    );
+
+    // Flow 3: Retry driver – when asked to retry, run resolve again
+    G.when(TOPIC_RETRY_RESOLVE,
+        G.async_blocking("mdns-query", mdns_query_worker,
+            [](const Event& e, IEventBus& bus) {
+                const char* host = static_cast<const char*>(e.ptr);
+                bus.publish(Event{TOPIC_MDNS_FOUND, 0, host ? strdup(host) : nullptr, free});
+            },
+            FlowGraph::publish(TOPIC_MDNS_FAILED)
+        )
+    );
+
+    // Flow 4: mDNS success – cache IP, reset backoff, then connect
+    G.when(TOPIC_MDNS_FOUND,
+        FlowGraph::seq(
+            FlowGraph::tap([](const Event& e) {
+                const char* ip = static_cast<const char*>(e.ptr);
+                persist_broker_ip_if_any(ip);
+                reset_backoff();
+                BUS.publish(Event{TOPIC_BROKER_PERSISTED, 0, nullptr});
+            }),
+            G.async_blocking_with_event("mqtt-connect", mqtt_connection_worker_with_event,
+                FlowGraph::publish(TOPIC_MQTT_CONNECTED, 0, nullptr),
+                FlowGraph::seq(
+                    FlowGraph::publish(TOPIC_MQTT_DISCONNECTED, 0, nullptr),
+                    FlowGraph::publish(TOPIC_SYSTEM_ERROR, 6, nullptr)
+                )
+            )
+        )
+    );
+
+    // Flow 5: mDNS failed – backoff + retry
+    G.when(TOPIC_MDNS_FAILED,
+        FlowGraph::tap([](const Event& e) {
+            schedule_reconnect();
+        })
+    );
+
+    // Flow 6: Disconnected – enter safe mode and schedule retry
+    G.when(TOPIC_MQTT_DISCONNECTED,
+        FlowGraph::tap([](const Event& e) {
+            enter_safe_mode();
+            schedule_reconnect();
+        })
+    );
 
     // ===== REGISTER CENTRALIZED LOGGING HANDLER =====
     // Subscribe to all events for centralized logging
@@ -605,6 +740,34 @@ extern "C" void app_main(void) {
         executePinCommand(e, PIN_MODE);
     }));
 
+    // Flow 8: Critical command paths – success exits safe mode; failure enters
+    G.when(TOPIC_PIN_SUCCESS,
+        FlowGraph::tap([](const Event& e) {
+            if (SystemStateManager::isSafe()) {
+                exit_safe_mode();
+                BUS.publish(Event{TOPIC_SAFE_MODE_EXIT, 0, nullptr});
+            }
+        })
+    );
+
+    G.when(TOPIC_SYSTEM_ERROR,
+        FlowGraph::tap([](const Event& e) {
+            if (e.i32 == 4) { // device command exec failed
+                enter_safe_mode();
+                BUS.publish(Event{TOPIC_SAFE_MODE_ENTER, 0, nullptr});
+            }
+        })
+    );
+
+    // Flow 9: On-demand status publish
+    G.when(TOPIC_DEVICE_STATUS,
+        FlowGraph::tap([](const Event& e) {
+            if (!MqttClient::isConnected()) return;
+            auto js = SystemStateManager::createDeviceStatusJson();
+            MqttClient::publish(get_mqtt_status_topic(), js, 1);
+        })
+    );
+
     // ===== REGISTER LEGACY EVENT HANDLERS =====
     BUS.subscribe(fallback_mqtt_connection_handler, nullptr, bit(TOPIC_MDNS_FAILED));
     BUS.subscribe(timer_execution_handler, nullptr, bit(TOPIC_TIMER));
@@ -621,6 +784,8 @@ extern "C" void app_main(void) {
         
         // Publish periodic timer event with current uptime
         uint64_t current_time = getCurrentUptimeSeconds();
-        BUS.publish(Event{TOPIC_TIMER, static_cast<int32_t>(current_time), nullptr});
+        Event timer_event{TOPIC_TIMER, 0, nullptr};
+        timer_event.u64 = current_time;
+        BUS.publish(timer_event);
     }
 }

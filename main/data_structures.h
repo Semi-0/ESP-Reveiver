@@ -90,13 +90,14 @@ struct SystemState {
     bool wifi_connected;
     bool mqtt_connected;
     bool mdns_available;
+    bool safe_mode;
     std::string current_broker;
     int current_broker_port;
     uint64_t uptime_seconds;
     int error_count;
     int message_count;
     
-    SystemState() : wifi_connected(false), mqtt_connected(false), mdns_available(false),
+    SystemState() : wifi_connected(false), mqtt_connected(false), mdns_available(false), safe_mode(false),
                    current_broker_port(0), uptime_seconds(0), error_count(0), message_count(0) {}
 };
 

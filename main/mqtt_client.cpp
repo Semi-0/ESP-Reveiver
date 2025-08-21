@@ -5,6 +5,7 @@
 #include <cstring>
 #include "esp_event.h"
 #include "mqtt_client.h"
+#include <algorithm>
 
 static const char* TAG = "MQTT_CLIENT";
 
@@ -214,12 +215,21 @@ bool MqttClient::subscribe(const std::string& topic, int qos) {
     return true;
 }
 
-bool MqttClient::publish(const std::string& topic, const std::string& message, int qos) {
+bool MqttClient::publish(const std::string& topic, const std::string& message, int qos, bool retain) {
     if (!isConnected()) {
         return false;
     }
     
-    esp_err_t err = esp_mqtt_client_publish(mqtt_client, topic.c_str(), message.c_str(), message.length(), qos, 0);
+    // Truncate noisy payload logs unless DEBUG
+    std::string log_message = message;
+    if (log_message.length() > MAX_PAYLOAD_LOG_LENGTH) {
+        log_message = log_message.substr(0, MAX_PAYLOAD_LOG_LENGTH) + "...";
+    }
+    
+    ESP_LOGI(TAG, "Publishing to topic: %s, message: %s, qos: %d, retain: %s", 
+             topic.c_str(), log_message.c_str(), qos, retain ? "true" : "false");
+    
+    esp_err_t err = esp_mqtt_client_publish(mqtt_client, topic.c_str(), message.c_str(), message.length(), qos, retain ? 1 : 0);
     if (err != ESP_OK) {
         return false;
     }

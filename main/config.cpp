@@ -49,6 +49,10 @@ std::string get_mqtt_response_topic() {
     return get_mqtt_topic_prefix() + "/response";
 }
 
+std::string get_mqtt_safe_topic() {
+    return get_mqtt_topic_prefix() + "/safe";
+}
+
 // Application settings
 const char* APP_TAG = "MQTT_RECEIVER";
 

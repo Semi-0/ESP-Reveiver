@@ -124,3 +124,30 @@ std::vector<DeviceCommandResult> DeviceMonitor::executeDeviceCommands(const std:
     
     return results;
 }
+
+// Safe mode: set all outputs to safe state
+void DeviceMonitor::allOutputsSafe() {
+    ESP_LOGI(TAG, "Setting all outputs to safe state");
+    
+    // Set all configured output pins to LOW (safe state)
+    // This is a simplified implementation - in a real system you'd have a list of output pins
+    const int output_pins[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
+    const int num_pins = sizeof(output_pins) / sizeof(output_pins[0]);
+    
+    for (int i = 0; i < num_pins; i++) {
+        int pin = output_pins[i];
+        if (isValidPin(pin)) {
+            // Configure as output if not already
+            PinController::configure_pin_if_needed(pin, GPIO_MODE_OUTPUT);
+            // Set to LOW (safe state)
+            PinController::digital_write(pin, false);
+            ESP_LOGI(TAG, "Set pin %d to LOW (safe state)", pin);
+        }
+    }
+    
+    // Note: In a real implementation, you might also:
+    // - Stop any PWM outputs
+    // - Stop any pattern playback
+    // - Disable any motor drivers
+    // - Set relays to safe positions
+}
