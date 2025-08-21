@@ -194,14 +194,16 @@ void centralized_logging_handler(const Event& e, void* user) {
         case TOPIC_PIN_SET:
             event_name = "Pin Set";
             {
-                ESP_LOGI(TAG, "Pin set event - Pin: %d, Value: %d", e.i32, static_cast<int>(e.u64));
+                auto* d = static_cast<PinCommandData*>(e.ptr);
+                if (d) ESP_LOGI(TAG, "Pin set - Pin:%d Val:%d", d->pin, d->value);
             }
             return; // Already logged above
             
         case TOPIC_PIN_READ:
             event_name = "Pin Read";
             {
-                ESP_LOGI(TAG, "Pin read event - Pin: %d, Value: %d", e.i32, static_cast<int>(e.u64));
+                auto* d = static_cast<PinCommandData*>(e.ptr);
+                if (d) ESP_LOGI(TAG, "Pin read - Pin:%d", d->pin);
             }
             return; // Already logged above
             
@@ -290,17 +292,10 @@ static bool mdns_query_worker(void** out) {
                     // It's a hostname, try to resolve it
                     // Try to get the IP address from the service record directly
                     if (r->addr && r->addr->addr.type == ESP_IPADDR_TYPE_V4) {
-                        // Convert IP address to string
-                        char ip_str[16];
-                        snprintf(ip_str, sizeof(ip_str), "%lu.%lu.%lu.%lu", 
-                                 r->addr->addr.u_addr.ip4.addr & 0xFF,
-                                 (r->addr->addr.u_addr.ip4.addr >> 8) & 0xFF,
-                                 (r->addr->addr.u_addr.ip4.addr >> 16) & 0xFF,
-                                 (r->addr->addr.u_addr.ip4.addr >> 24) & 0xFF);
-                        
-                        // Allocate and copy IP address
-                        char* ip_address = strdup(ip_str);
-                        *out = ip_address;
+                        // Convert IP address to string using ESP-IDF helper
+                        char ip[16];
+                        esp_ip4addr_ntoa(&r->addr->addr.u_addr.ip4, ip, sizeof(ip));
+                        *out = strdup(ip);
                         
                         mdns_query_results_free(results);
                         return true;
@@ -310,17 +305,10 @@ static bool mdns_query_worker(void** out) {
                         esp_err_t addr_err = mdns_query_a(r->hostname, MDNS_QUERY_TIMEOUT_MS, &addr);
                         
                         if (addr_err == ESP_OK) {
-                            // Convert IP address to string
-                            char ip_str[16];
-                            snprintf(ip_str, sizeof(ip_str), "%lu.%lu.%lu.%lu", 
-                                     addr.addr & 0xFF,
-                                     (addr.addr >> 8) & 0xFF,
-                                     (addr.addr >> 16) & 0xFF,
-                                     (addr.addr >> 24) & 0xFF);
-                            
-                            // Allocate and copy IP address
-                            char* ip_address = strdup(ip_str);
-                            *out = ip_address;
+                            // Convert IP address to string using ESP-IDF helper
+                            char ip[16];
+                            esp_ip4addr_ntoa(&addr, ip, sizeof(ip));
+                            *out = strdup(ip);
                             
                             mdns_query_results_free(results);
                             return true;
@@ -364,9 +352,7 @@ static bool mqtt_connection_worker_with_event(const Event& trigger_event, void**
     auto result = MqttClient::connect(connection_data);
     
     if (result.success) {
-        // Store connection data for later use
-        auto* conn_data = new MqttConnectionData(connection_data);
-        *out = conn_data;
+        *out = nullptr; // no allocation to leak
         return true;
     } else {
         ESP_LOGE("MQTT_WORKER_EVENT", "Failed to connect: %s", result.error_message.c_str());
@@ -449,14 +435,10 @@ void fallback_mqtt_connection_handler(const Event& e, void* user) {
     
     if (result.success) {
         std::string control_topic = get_mqtt_control_topic();
-        if (MqttClient::subscribe(control_topic, 0)) {
-            // Publish success event
-            Event success_event{TOPIC_MQTT_CONNECTED, 0, nullptr};
-            BUS.publish(success_event);
+        if (MqttClient::subscribe(control_topic, 1)) {
+            BUS.publish(Event{TOPIC_MQTT_SUBSCRIBED, 0, nullptr});
         } else {
-            // Publish error event
-            Event error_event{TOPIC_SYSTEM_ERROR, 7, nullptr};
-            BUS.publish(error_event);
+            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
         }
     } else {
         // Publish error event
@@ -547,19 +529,6 @@ extern "C" void app_main(void) {
         )
     );
 
-    // Flow 2: When mDNS succeeds, connect to MQTT
-    G.when(TOPIC_MDNS_FOUND,
-        G.async_blocking_with_event("mqtt-connect", mqtt_connection_worker_with_event,
-            // onOk → publish MQTT_CONNECTED
-            FlowGraph::publish(TOPIC_MQTT_CONNECTED, 1, nullptr),
-            // onErr → publish MQTT_DISCONNECTED and system error
-            FlowGraph::seq(
-                FlowGraph::publish(TOPIC_MQTT_DISCONNECTED, 0, nullptr),
-                FlowGraph::publish(TOPIC_SYSTEM_ERROR, 6, nullptr)
-            )
-        )
-    );
-
     // Flow 2.5: When MQTT connects, publish online status, reset backoff, and begin subscriptions
     G.when(TOPIC_MQTT_CONNECTED,
         FlowGraph::tap([](const Event& e) {
@@ -596,8 +565,7 @@ extern "C" void app_main(void) {
     G.when(TOPIC_RETRY_RESOLVE,
         G.async_blocking("mdns-query", mdns_query_worker,
             [](const Event& e, IEventBus& bus) {
-                const char* host = static_cast<const char*>(e.ptr);
-                bus.publish(Event{TOPIC_MDNS_FOUND, 0, host ? strdup(host) : nullptr, free});
+                bus.publish(Event{TOPIC_MDNS_FOUND, 0, e.ptr, free});
             },
             FlowGraph::publish(TOPIC_MDNS_FAILED)
         )
@@ -622,6 +590,8 @@ extern "C" void app_main(void) {
         )
     );
 
+
+
     // Flow 5: mDNS failed – backoff + retry
     G.when(TOPIC_MDNS_FAILED,
         FlowGraph::tap([](const Event& e) {
@@ -632,6 +602,7 @@ extern "C" void app_main(void) {
     // Flow 6: Disconnected – enter safe mode and schedule retry
     G.when(TOPIC_MQTT_DISCONNECTED,
         FlowGraph::tap([](const Event& e) {
+            s_subs_pending = 0;
             enter_safe_mode();
             schedule_reconnect();
         })
