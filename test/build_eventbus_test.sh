@@ -1,18 +1,21 @@
 #!/bin/bash
+
+# Build script for EventBus implementation tests
 set -e
 
-echo "Building Event Bus and Flow Graph Unit Test..."
+echo "=== Building EventBus Implementation Tests ==="
 
-# Create build directory
-mkdir -p test/build
+# Set up environment
+export IDF_PATH=${IDF_PATH:-$HOME/esp/esp-idf}
+source $IDF_PATH/export.sh
 
 # Build the test
-g++ -std=c++17 \
-    -Wall -Wextra -Wpedantic \
-    -I. \
-    -o test/build/test_eventbus_flow \
-    test/test_eventbus_flow.cpp \
-    -lpthread
+cd test
+idf.py build
 
-echo "Build complete!"
-echo "Run with: ./test/build/test_eventbus_flow"
+echo "=== EventBus Tests Built Successfully ==="
+echo "To run tests:"
+echo "  idf.py flash monitor"
+echo ""
+echo "Or to run specific test:"
+echo "  idf.py flash monitor --target esp32"

@@ -1,0 +1,12 @@
+{
+  "project": "ESP32 MQTT Receiver",
+  "dependencies_installed": true,
+  "esp_idf_path": "/Users/linpandi/esp/esp-idf",
+  "setup_script": "setup_env.sh",
+  "next_steps": [
+    "Source the environment: source setup_env.sh",
+    "Build the project: idf.py build",
+    "Flash the device: ./flash_interactive.sh",
+    "Monitor output: ./monitor.sh"
+  ]
+}

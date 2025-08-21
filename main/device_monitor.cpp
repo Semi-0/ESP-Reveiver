@@ -59,27 +59,54 @@ DeviceCommandResult DeviceMonitor::executeDeviceCommand(const DevicePinCommand& 
     
     // Execute based on command type
     switch (command.type) {
-        case PIN_SET:
+        case PIN_SET: {
             // Validate value for digital/analog operations
             if (!isValidDigitalValue(command.value) && !isValidAnalogValue(command.value)) {
                 return createFailureResult(command, "Invalid pin value");
             }
             
-            // In a real implementation, this would call PinController
-            // For now, we'll simulate success
-            return createSuccessResult(command, "Pin set successfully");
+            // Map digital values: 0 = LOW, 1 = HIGH
+            if (isValidDigitalValue(command.value)) {
+                bool high = (command.value == 1);
+                PinController::digital_write(command.pin, high);
+                std::string action = "Digital write: pin " + std::to_string(command.pin) + 
+                                   " = " + (high ? "HIGH" : "LOW");
+                return createSuccessResult(command, action);
+            } else {
+                // Analog value (0-255)
+                PinController::analog_write(command.pin, command.value);
+                std::string action = "Analog write: pin " + std::to_string(command.pin) + 
+                                   " = " + std::to_string(command.value);
+                return createSuccessResult(command, action);
+            }
+        }
             
-        case PIN_READ:
-            // In a real implementation, this would read from PinController
-            // For now, we'll simulate success
-            return createSuccessResult(command, "Pin read successfully");
+        case PIN_READ: {
+            // Configure pin as input and read value
+            PinController::configure_pin_if_needed(command.pin, GPIO_MODE_INPUT);
+            int value = gpio_get_level((gpio_num_t)command.pin);
+            std::string action = "Pin read: pin " + std::to_string(command.pin) + 
+                               " = " + std::to_string(value);
+            return DeviceCommandResult::success_result(action, command.pin, value);
+        }
             
-        case PIN_MODE:
+        case PIN_MODE: {
             if (!isValidDigitalValue(command.value)) {
                 return createFailureResult(command, "Invalid mode value (0=INPUT, 1=OUTPUT)");
             }
-            // In a real implementation, this would set pin mode
-            return createSuccessResult(command, "Pin mode set successfully");
+            // Set pin mode: 0 = INPUT, 1 = OUTPUT
+            gpio_mode_t mode = (command.value == 0) ? GPIO_MODE_INPUT : GPIO_MODE_OUTPUT;
+            PinController::configure_pin_if_needed(command.pin, mode);
+            std::string action = "Pin mode set: pin " + std::to_string(command.pin) + 
+                               " = " + (mode == GPIO_MODE_INPUT ? "INPUT" : "OUTPUT");
+            return createSuccessResult(command, action);
+        }
+            
+        case DEVICE_STATUS:
+            return createSuccessResult(command, "Device status requested");
+            
+        case DEVICE_RESET:
+            return createSuccessResult(command, "Device reset requested");
             
         default:
             return createFailureResult(command, "Unknown command type");

@@ -1,0 +1,24 @@
+# ESP32 MQTT Receiver - Python Dependencies
+# Core dependencies for the dependency installer and development tools
+
+# Serial communication for ESP32
+pyserial>=3.5
+
+# YAML configuration files
+pyyaml>=6.0
+
+# CLI interface
+click>=8.0
+
+# Colored terminal output
+colorama>=0.4.4
+
+# HTTP requests for downloading
+requests>=2.25.0
+
+# Optional: Development and testing tools
+pytest>=6.0
+pytest-cov>=2.10
+black>=21.0
+flake8>=3.8
+

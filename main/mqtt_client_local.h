@@ -4,6 +4,7 @@
 #include "eventbus/EventBus.h"
 #include <string>
 #include <functional>
+#include "esp_event.h"
 
 // MQTT connection result
 struct MqttConnectionResult {
@@ -45,6 +46,9 @@ public:
     
     // Set event bus for publishing events
     static void setEventBus(IEventBus* event_bus);
+    
+    // Friend function for event handler
+    friend void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
     
 private:
     static IEventBus* event_bus_;

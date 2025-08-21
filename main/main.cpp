@@ -5,7 +5,7 @@
 #include "data_structures.h"
 #include "message_processor.h"
 #include "device_monitor.h"
-#include "custom_mqtt_client.h"
+#include "mqtt_client_local.h"
 #include "system_state.h"
 #include <stdio.h>
 #include <string.h>
@@ -119,14 +119,14 @@ void centralized_logging_handler(const Event& e, void* user) {
         case TOPIC_PIN_SET:
             event_name = "Pin Set";
             {
-                ESP_LOGI(TAG, "Pin set event - Pin: %d, Value: %p", e.i32, e.ptr);
+                ESP_LOGI(TAG, "Pin set event - Pin: %d, Value: %d", e.i32, static_cast<int>(e.u64));
             }
             return; // Already logged above
             
         case TOPIC_PIN_READ:
             event_name = "Pin Read";
             {
-                ESP_LOGI(TAG, "Pin read event - Pin: %d, Value: %p", e.i32, e.ptr);
+                ESP_LOGI(TAG, "Pin read event - Pin: %d, Value: %d", e.i32, static_cast<int>(e.u64));
             }
             return; // Already logged above
             
@@ -297,6 +297,7 @@ static bool mqtt_connection_worker_with_event(const Event& trigger_event, void**
         ESP_LOGE("MQTT_WORKER_EVENT", "Failed to connect: %s", result.error_message.c_str());
         return false;
     }
+    // TODO: convert ptr payloads to typed fields (avoid reinterpret_cast)
 }
 
 // ===== WIFI EVENT HANDLERS =====
@@ -312,6 +313,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         BUS.publish(Event{TOPIC_WIFI_DISCONNECTED, 0, nullptr});
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         (void)event_data; // Unused but required by interface
+        ESP_LOGI("WIFI_EVENT", "Got IP address! Setting WIFI_CONNECTED_BIT");
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         
         // Initialize mDNS now that we have network connectivity
@@ -324,6 +326,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             esp_err_t hostname_ret = mdns_hostname_set(hostname.c_str());
             ESP_LOGI("WIFI_EVENT", "mDNS hostname set result: %s for hostname: %s", esp_err_to_name(hostname_ret), hostname.c_str());
         }
+        BUS.publish(Event{TOPIC_WIFI_CONNECTED, 0, nullptr});
     }
 }
 
@@ -458,7 +461,8 @@ extern "C" void app_main(void) {
             // onOk → publish MDNS_FOUND with hostname
             [](const Event& e, IEventBus& bus) {
                 const char* hostname = static_cast<const char*>(e.ptr);
-                bus.publish(Event{TOPIC_MDNS_FOUND, 0, hostname ? strdup(hostname) : nullptr});
+                char* hostname_copy = hostname ? strdup(hostname) : nullptr;
+                bus.publish(Event{TOPIC_MDNS_FOUND, 0, hostname_copy, free});
             },
             // onErr → publish MDNS_FAILED and system error
             FlowGraph::seq(
@@ -494,9 +498,9 @@ extern "C" void app_main(void) {
     );
 
     // Flow 3: When mDNS fails, use fallback MQTT broker
-    G.when(TOPIC_MDNS_FAILED,
-        FlowGraph::publish(TOPIC_MDNS_FAILED)
-    );
+    BUS.subscribe(fallback_mqtt_connection_handler, nullptr, bit(TOPIC_MDNS_FAILED));
+    // TODO: backoff reconnect (1→32s)
+    // TODO: persist broker IP to NVS after first success
 
     // ===== REGISTER CENTRALIZED LOGGING HANDLER =====
     // Subscribe to all events for centralized logging
@@ -528,7 +532,7 @@ extern "C" void app_main(void) {
                             device_cmd.value,
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_SET, device_cmd.pin, pin_cmd_data});
+                        BUS.publish(Event{TOPIC_PIN_SET, device_cmd.pin, pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); }});
                         break;
                     }
                     case PIN_READ: {
@@ -537,7 +541,7 @@ extern "C" void app_main(void) {
                             0, // Read doesn't have a value to set
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_READ, device_cmd.pin, pin_cmd_data});
+                        BUS.publish(Event{TOPIC_PIN_READ, device_cmd.pin, pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); }});
                         break;
                     }
                     case PIN_MODE: {
@@ -546,7 +550,7 @@ extern "C" void app_main(void) {
                             device_cmd.value, // Mode value
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_MODE, device_cmd.pin, pin_cmd_data});
+                        BUS.publish(Event{TOPIC_PIN_MODE, device_cmd.pin, pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); }});
                         break;
                     }
                     case DEVICE_STATUS: {
@@ -583,7 +587,7 @@ extern "C" void app_main(void) {
             BUS.publish(Event{TOPIC_SYSTEM_ERROR, 7, nullptr});
         }
         
-        delete pin_cmd_data;
+        // Note: pin_cmd_data will be freed by the event bus destructor
     };
 
     // Flow 5: When pin set command received, execute it
@@ -608,23 +612,7 @@ extern "C" void app_main(void) {
     // Initialize WiFi
     wifi_init_sta();
 
-    // Main loop - wait for WiFi connection and trigger events
-    EventBits_t bits;
-    while (1) {
-        bits = xEventGroupWaitBits(s_wifi_event_group,
-                                   WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                   pdFALSE,
-                                   pdFALSE,
-                                   portMAX_DELAY);
 
-        if (bits & WIFI_CONNECTED_BIT) {
-            BUS.publish(Event{TOPIC_WIFI_CONNECTED, 0, nullptr});
-            break;
-        } else if (bits & WIFI_FAIL_BIT) {
-            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 1, nullptr});
-            break;
-        }
-    }
 
     // ===== EVENT-DRIVEN MAIN LOOP =====
     ESP_LOGI(TAG, "EventBus system running...");
