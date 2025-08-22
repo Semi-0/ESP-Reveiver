@@ -24,7 +24,27 @@
 #include "nvs_flash.h"
 #include "esp_timer.h"
 
-static const char* TAG = "EVENTBUS_MAIN";
+static const char* TAG = "MAIN";
+
+// ===== HELPER FUNCTIONS FOR MANUAL CLEANUP =====
+
+// Helper function for manual event cleanup
+static void manual_event_cleanup(const Event& event, const char* context = "worker") {
+    if (event.cleanup && event.ptr) {
+        event.cleanup(event.ptr);
+        ESP_LOGD("EVENT_CLEANUP", "Manually freed event payload in %s", context);
+    }
+}
+
+// Helper function to create events with manual cleanup disabled
+static Event create_event_with_manual_cleanup(uint16_t type, int32_t data, void* ptr = nullptr, EventCleanupFn cleanup = nullptr) {
+    return Event{type, data, ptr, cleanup, false}; // auto_cleanup = false
+}
+
+// Helper function to create events with auto cleanup (for simple events)
+static Event create_simple_event(uint16_t type, int32_t data, void* ptr = nullptr) {
+    return Event{type, data, ptr, nullptr, true}; // auto_cleanup = true for simple events
+}
 
 // Global event bus
 static TinyEventBus BUS;
@@ -70,12 +90,11 @@ void centralized_logging_handler(const Event& e, void* user) {
         case TOPIC_MDNS_FOUND:
             event_name = "mDNS Found";
             {
-                const char* host = static_cast<const char*>(e.ptr);
-                ESP_LOGI(TAG, "mDNS found MQTT broker: %s", host ? host : "<null>");
+                // Get broker info from global state instead of event payload
+                SystemState current_state = SystemStateManager::getCurrentState();
+                ESP_LOGI(TAG, "mDNS found MQTT broker: %s:%d", 
+                         current_state.current_broker.c_str(), current_state.current_broker_port);
                 SystemStateManager::updateMdnsState(true);
-                if (host) {
-                    SystemStateManager::updateBrokerInfo(host, MQTT_BROKER_PORT);
-                }
             }
             return; // Already logged above
             
@@ -112,6 +131,8 @@ void centralized_logging_handler(const Event& e, void* user) {
                     ESP_LOGI(TAG, "MQTT message received - Topic: %s, Payload: %s", 
                              msg_data->topic.c_str(), msg_data->payload.c_str());
                     SystemStateManager::incrementMessageCount();
+                    // Manual cleanup for dynamic message data
+                    manual_event_cleanup(e, "centralized_logging_mqtt_message");
                 }
             }
             return; // Already logged above
@@ -186,14 +207,18 @@ static bool mdns_query_worker(void** out) {
     esp_err_t err = mdns_query_ptr(MDNS_SERVICE_TYPE, MDNS_PROTOCOL, MDNS_QUERY_TIMEOUT_MS, MDNS_MAX_RESULTS, &results);
     
     if (err != ESP_OK) {
-        char* host = strdup("10.0.0.161");
-        *out = host;
+        // Store fallback broker in global state
+        SystemStateManager::updateBrokerInfo("10.0.0.161", MQTT_BROKER_PORT);
+        SystemStateManager::updateMdnsState(false);
+        *out = nullptr; // No dynamic data to return
         return true;
     }
     
     if (results == nullptr) {
-        char* host = strdup("10.0.0.161");
-        *out = host;
+        // Store fallback broker in global state
+        SystemStateManager::updateBrokerInfo("10.0.0.161", MQTT_BROKER_PORT);
+        SystemStateManager::updateMdnsState(false);
+        *out = nullptr; // No dynamic data to return
         return true;
     }
     
@@ -206,10 +231,12 @@ static bool mdns_query_worker(void** out) {
                 // Check if hostname is already an IP address
                 if (strchr(r->hostname, '.') != nullptr && isdigit(r->hostname[0])) {
                     // It looks like an IP address, use it directly
-                    char* ip_address = strdup(r->hostname);
-                    *out = ip_address;
+                    std::string broker_ip(r->hostname);
+                    SystemStateManager::updateBrokerInfo(broker_ip, MQTT_BROKER_PORT);
+                    SystemStateManager::updateMdnsState(true);
                     
                     mdns_query_results_free(results);
+                    *out = nullptr; // No dynamic data to return
                     return true;
                 } else {
                     // It's a hostname, try to resolve it
@@ -223,11 +250,13 @@ static bool mdns_query_worker(void** out) {
                                  (r->addr->addr.u_addr.ip4.addr >> 16) & 0xFF,
                                  (r->addr->addr.u_addr.ip4.addr >> 24) & 0xFF);
                         
-                        // Allocate and copy IP address
-                        char* ip_address = strdup(ip_str);
-                        *out = ip_address;
+                        // Store broker IP in global state
+                        std::string broker_ip(ip_str);
+                        SystemStateManager::updateBrokerInfo(broker_ip, MQTT_BROKER_PORT);
+                        SystemStateManager::updateMdnsState(true);
                         
                         mdns_query_results_free(results);
+                        *out = nullptr; // No dynamic data to return
                         return true;
                     } else {
                         // Try to query for the IP address of this hostname
@@ -243,19 +272,22 @@ static bool mdns_query_worker(void** out) {
                                      (addr.addr >> 16) & 0xFF,
                                      (addr.addr >> 24) & 0xFF);
                             
-                            // Allocate and copy IP address
-                            char* ip_address = strdup(ip_str);
-                            *out = ip_address;
+                            // Store broker IP in global state
+                            std::string broker_ip(ip_str);
+                            SystemStateManager::updateBrokerInfo(broker_ip, MQTT_BROKER_PORT);
+                            SystemStateManager::updateMdnsState(true);
                             
                             mdns_query_results_free(results);
+                            *out = nullptr; // No dynamic data to return
                             return true;
                         } else {
                             // Fallback to hostname with .local suffix
                             std::string full_hostname = std::string(r->hostname) + ".local";
-                            char* hostname = strdup(full_hostname.c_str());
-                            *out = hostname;
+                            SystemStateManager::updateBrokerInfo(full_hostname, MQTT_BROKER_PORT);
+                            SystemStateManager::updateMdnsState(true);
                             
                             mdns_query_results_free(results);
+                            *out = nullptr; // No dynamic data to return
                             return true;
                         }
                     }
@@ -266,24 +298,31 @@ static bool mdns_query_worker(void** out) {
     }
     
     // If no matching service found, use fallback to known broker IP
-    char* host = strdup("10.0.0.161");
+    SystemStateManager::updateBrokerInfo("10.0.0.161", MQTT_BROKER_PORT);
+    SystemStateManager::updateMdnsState(false);
     mdns_query_results_free(results);
-    *out = host;
+    *out = nullptr; // No dynamic data to return
     return true;
 }
 
-// MQTT connection worker that receives hostname from event - pure execution only
+// MQTT connection worker that gets broker address from global state - pure execution only
 static bool mqtt_connection_worker_with_event(const Event& trigger_event, void** out) {
-    const char* host = static_cast<const char*>(trigger_event.ptr);
-    ESP_LOGI("MQTT_WORKER_EVENT", "Attempting MQTT connection to host from event: %s", host ? host : "NULL");
+    ESP_LOGI("MQTT_WORKER_EVENT", "Attempting MQTT connection using broker from global state");
     
-    if (!host) {
-        ESP_LOGE("MQTT_WORKER_EVENT", "No hostname provided in event");
+    // Get broker info from global state
+    SystemState current_state = SystemStateManager::getCurrentState();
+    std::string broker_host = current_state.current_broker;
+    int broker_port = current_state.current_broker_port;
+    
+    if (broker_host.empty()) {
+        ESP_LOGE("MQTT_WORKER_EVENT", "No broker hostname available in global state");
         return false;
     }
     
-    // Create MQTT connection data
-    MqttConnectionData connection_data(host, MQTT_BROKER_PORT, get_esp32_device_id());
+    ESP_LOGI("MQTT_WORKER_EVENT", "Connecting to broker: %s:%d", broker_host.c_str(), broker_port);
+    
+    // Create MQTT connection data using broker info from global state
+    MqttConnectionData connection_data(broker_host.c_str(), broker_port, get_esp32_device_id());
     
     // Connect to MQTT
     auto result = MqttClient::connect(connection_data);
@@ -308,8 +347,9 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         esp_wifi_connect();
         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        // Publish WiFi disconnected event
-        BUS.publish(Event{TOPIC_WIFI_DISCONNECTED, 0, nullptr});
+        // Publish WiFi disconnected event with manual cleanup
+        Event disconnect_event = create_simple_event(TOPIC_WIFI_DISCONNECTED, 0, nullptr);
+        BUS.publish(disconnect_event);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         (void)event_data; // Unused but required by interface
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -365,24 +405,35 @@ static void wifi_init_sta() {
 // ===== EXECUTION EVENT HANDLERS (NO LOGGING) =====
 
 void fallback_mqtt_connection_handler(const Event& e, void* user) {
-    // Create fallback connection data
-    MqttConnectionData fallback_data(MQTT_BROKER_HOST, MQTT_BROKER_PORT, get_esp32_device_id());
+    // Get broker info from global state
+    SystemState current_state = SystemStateManager::getCurrentState();
+    std::string broker_host = current_state.current_broker;
+    int broker_port = current_state.current_broker_port;
+    
+    if (broker_host.empty()) {
+        // Fallback to default if no broker info available
+        broker_host = MQTT_BROKER_HOST;
+        broker_port = MQTT_BROKER_PORT;
+    }
+    
+    // Create fallback connection data using global state
+    MqttConnectionData fallback_data(broker_host.c_str(), broker_port, get_esp32_device_id());
     auto result = MqttClient::connect(fallback_data);
     
     if (result.success) {
         std::string control_topic = get_mqtt_control_topic();
         if (MqttClient::subscribe(control_topic, 0)) {
-            // Publish success event
-            Event success_event{TOPIC_MQTT_CONNECTED, 0, nullptr};
+            // Publish success event with manual cleanup
+            Event success_event = create_simple_event(TOPIC_MQTT_CONNECTED, 0, nullptr);
             BUS.publish(success_event);
         } else {
-            // Publish error event
-            Event error_event{TOPIC_SYSTEM_ERROR, 7, nullptr};
+            // Publish error event with manual cleanup
+            Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 7, nullptr);
             BUS.publish(error_event);
         }
     } else {
-        // Publish error event
-        Event error_event{TOPIC_SYSTEM_ERROR, 7, nullptr};
+        // Publish error event with manual cleanup
+        Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 7, nullptr);
         BUS.publish(error_event);
     }
 }
@@ -406,12 +457,12 @@ void timer_execution_handler(const Event& e, void* user) {
             // Publish device info
             std::string status_topic = get_mqtt_status_topic();
             if (MqttClient::publish(status_topic, status_json, 0)) {
-                // Publish success event
-                Event success_event{TOPIC_STATUS_PUBLISH_SUCCESS, 0, nullptr};
+                // Publish success event with manual cleanup
+                Event success_event = create_simple_event(TOPIC_STATUS_PUBLISH_SUCCESS, 0, nullptr);
                 BUS.publish(success_event);
             } else {
-                // Publish error event
-                Event error_event{TOPIC_SYSTEM_ERROR, 8, nullptr};
+                // Publish error event with manual cleanup
+                Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 8, nullptr);
                 BUS.publish(error_event);
             }
         }
@@ -455,10 +506,12 @@ extern "C" void app_main(void) {
     // Flow 1: When WiFi connects, do mDNS lookup
     G.when(TOPIC_WIFI_CONNECTED,
         G.async_blocking("mdns-query", mdns_query_worker,
-            // onOk → publish MDNS_FOUND with hostname
+            // onOk → publish MDNS_FOUND (no dynamic data needed)
             [](const Event& e, IEventBus& bus) {
-                const char* hostname = static_cast<const char*>(e.ptr);
-                bus.publish(Event{TOPIC_MDNS_FOUND, 0, hostname ? strdup(hostname) : nullptr});
+                // Broker info is already stored in global state by mdns_query_worker
+                // Just publish the success event
+                Event mdns_event = create_simple_event(TOPIC_MDNS_FOUND, 0, nullptr);
+                bus.publish(mdns_event);
             },
             // onErr → publish MDNS_FAILED and system error
             FlowGraph::seq(
@@ -488,7 +541,8 @@ extern "C" void app_main(void) {
             std::string control_topic = get_mqtt_control_topic();
             
             if (!MqttClient::subscribe(control_topic, 1)) {
-                BUS.publish(Event{TOPIC_SYSTEM_ERROR, 2, nullptr});
+                Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 2, nullptr);
+                BUS.publish(error_event);
             }
         })
     );
@@ -507,7 +561,8 @@ extern "C" void app_main(void) {
         FlowGraph::tap([](const Event& e) {
             auto* msg_data = static_cast<MqttMessageData*>(e.ptr);
             if (!msg_data) {
-                BUS.publish(Event{TOPIC_SYSTEM_ERROR, 1, nullptr});
+                Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 1, nullptr);
+                BUS.publish(error_event);
                 return;
             }
             
@@ -515,7 +570,8 @@ extern "C" void app_main(void) {
             auto device_command_result = MessageProcessor::processMessageToDeviceCommands(msg_data->payload);
             
             if (!device_command_result.success) {
-                BUS.publish(Event{TOPIC_SYSTEM_ERROR, 3, nullptr});
+                Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 3, nullptr);
+                BUS.publish(error_event);
                 return;
             }
             
@@ -528,7 +584,9 @@ extern "C" void app_main(void) {
                             device_cmd.value,
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_SET, device_cmd.pin, pin_cmd_data});
+                        Event pin_event = create_event_with_manual_cleanup(TOPIC_PIN_SET, device_cmd.pin, 
+                            pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); });
+                        BUS.publish(pin_event);
                         break;
                     }
                     case PIN_READ: {
@@ -537,7 +595,9 @@ extern "C" void app_main(void) {
                             0, // Read doesn't have a value to set
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_READ, device_cmd.pin, pin_cmd_data});
+                        Event pin_event = create_event_with_manual_cleanup(TOPIC_PIN_READ, device_cmd.pin, 
+                            pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); });
+                        BUS.publish(pin_event);
                         break;
                     }
                     case PIN_MODE: {
@@ -546,19 +606,24 @@ extern "C" void app_main(void) {
                             device_cmd.value, // Mode value
                             device_cmd.description
                         };
-                        BUS.publish(Event{TOPIC_PIN_MODE, device_cmd.pin, pin_cmd_data});
+                        Event pin_event = create_event_with_manual_cleanup(TOPIC_PIN_MODE, device_cmd.pin, 
+                            pin_cmd_data, [](void* ptr) { delete static_cast<PinCommandData*>(ptr); });
+                        BUS.publish(pin_event);
                         break;
                     }
                     case DEVICE_STATUS: {
-                        BUS.publish(Event{TOPIC_DEVICE_STATUS, 0, nullptr});
+                        Event status_event = create_simple_event(TOPIC_DEVICE_STATUS, 0, nullptr);
+                        BUS.publish(status_event);
                         break;
                     }
                     case DEVICE_RESET: {
-                        BUS.publish(Event{TOPIC_DEVICE_RESET, 0, nullptr});
+                        Event reset_event = create_simple_event(TOPIC_DEVICE_RESET, 0, nullptr);
+                        BUS.publish(reset_event);
                         break;
                     }
                     default: {
-                        BUS.publish(Event{TOPIC_SYSTEM_ERROR, 4, nullptr});
+                        Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 4, nullptr);
+                        BUS.publish(error_event);
                         break;
                     }
                 }
@@ -570,7 +635,8 @@ extern "C" void app_main(void) {
     auto executePinCommand = [](const Event& e, DeviceCommandType cmdType) {
         auto* pin_cmd_data = static_cast<PinCommandData*>(e.ptr);
         if (!pin_cmd_data) {
-            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 5, nullptr});
+            Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 5, nullptr);
+            BUS.publish(error_event);
             return;
         }
         
@@ -578,12 +644,15 @@ extern "C" void app_main(void) {
         auto result = DeviceMonitor::executeDeviceCommand(device_cmd);
         
         if (result.success) {
-            BUS.publish(Event{TOPIC_PIN_SUCCESS, result.pin, reinterpret_cast<void*>(result.value)});
+            Event success_event = create_simple_event(TOPIC_PIN_SUCCESS, result.pin, reinterpret_cast<void*>(result.value));
+            BUS.publish(success_event);
         } else {
-            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 7, nullptr});
+            Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 7, nullptr);
+            BUS.publish(error_event);
         }
         
-        delete pin_cmd_data;
+        // Manual cleanup of the event payload
+        manual_event_cleanup(e, "executePinCommand");
     };
 
     // Flow 5: When pin set command received, execute it
@@ -618,10 +687,12 @@ extern "C" void app_main(void) {
                                    portMAX_DELAY);
 
         if (bits & WIFI_CONNECTED_BIT) {
-            BUS.publish(Event{TOPIC_WIFI_CONNECTED, 0, nullptr});
+            Event wifi_event = create_simple_event(TOPIC_WIFI_CONNECTED, 0, nullptr);
+            BUS.publish(wifi_event);
             break;
         } else if (bits & WIFI_FAIL_BIT) {
-            BUS.publish(Event{TOPIC_SYSTEM_ERROR, 1, nullptr});
+            Event error_event = create_simple_event(TOPIC_SYSTEM_ERROR, 1, nullptr);
+            BUS.publish(error_event);
             break;
         }
     }
@@ -633,6 +704,7 @@ extern "C" void app_main(void) {
         
         // Publish periodic timer event with current uptime
         uint64_t current_time = getCurrentUptimeSeconds();
-        BUS.publish(Event{TOPIC_TIMER, static_cast<int32_t>(current_time), nullptr});
+        Event timer_event = create_simple_event(TOPIC_TIMER, static_cast<int32_t>(current_time), nullptr);
+        BUS.publish(timer_event);
     }
 }

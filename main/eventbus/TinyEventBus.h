@@ -47,9 +47,33 @@ public:
         }
     }
 
+    // Publish event to queue with drop oldest behavior (task context)
+    void publishToQueue(const Event& e) {
+        if (!q_) return;
+        
+        // Try to send the event normally first
+        BaseType_t result = xQueueSend(q_, &e, 0); // Non-blocking
+        
+        // If queue is full, drop the oldest event and try again
+        if (result == errQUEUE_FULL) {
+            dropOldestEvent();
+            // Try to send the new event again
+            xQueueSend(q_, &e, 0);
+        }
+    }
+
     void publishFromISR(const Event& e, BaseType_t* hpw=nullptr) override {
         if (!q_) return;
-        xQueueSendFromISR(q_, &e, hpw);
+        
+        // Try to send the event normally first
+        BaseType_t result = xQueueSendFromISR(q_, &e, hpw);
+        
+        // If queue is full, drop the oldest event and try again
+        if (result == errQUEUE_FULL) {
+            dropOldestEventFromISR();
+            // Try to send the new event again
+            xQueueSendFromISR(q_, &e, hpw);
+        }
     }
 
 private:
@@ -66,8 +90,52 @@ private:
     void dispatch() {
         for (;;) {
             Event e;
-            if (xQueueReceive(q_, &e, portMAX_DELAY) == pdTRUE) publish(e);
+            if (xQueueReceive(q_, &e, portMAX_DELAY) == pdTRUE) {
+                publish(e);
+                // Event destructor will handle cleanup automatically
+            }
         }
+    }
+
+    // Drop the oldest event from the queue (ISR-safe) with proper cleanup
+    void dropOldestEventFromISR() {
+        if (!q_) return;
+        
+        Event oldest_event;
+        // Remove the oldest event without blocking
+        if (xQueueReceiveFromISR(q_, &oldest_event, nullptr) == pdTRUE) {
+            // Event destructor will automatically clean up the payload
+            // This is safe because the Event destructor handles cleanup
+        }
+    }
+
+    // Drop the oldest event from the queue (task context) with proper cleanup
+    void dropOldestEvent() {
+        if (!q_) return;
+        
+        Event oldest_event;
+        // Remove the oldest event without blocking
+        if (xQueueReceive(q_, &oldest_event, 0) == pdTRUE) {
+            // Event destructor will automatically clean up the payload
+            // This is safe because the Event destructor handles cleanup
+        }
+    }
+
+    // Get queue statistics for monitoring
+    struct QueueStats {
+        UBaseType_t messages_waiting;
+        UBaseType_t spaces_available;
+        UBaseType_t total_spaces;
+    };
+    
+    QueueStats getQueueStats() const {
+        QueueStats stats = {0, 0, 0};
+        if (q_) {
+            stats.messages_waiting = uxQueueMessagesWaiting(q_);
+            stats.spaces_available = uxQueueSpacesAvailable(q_);
+            stats.total_spaces = EBUS_DISPATCH_QUEUE_LEN;
+        }
+        return stats;
     }
 
     QueueHandle_t q_ = nullptr;
