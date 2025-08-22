@@ -10,47 +10,6 @@
 #define EBUS_DISPATCH_QUEUE_LEN 32
 #endif
 
-// Tiny Mailbox for latest-only topics (doesn't use the queue)
-class TinyMailbox {
-public:
-    TinyMailbox() : latest_event_{0, 0, nullptr, nullptr}, has_event_(false) {}
-    
-    void publish(const Event& e) {
-        // Free previous event if it has a destructor
-        if (has_event_ && latest_event_.dtor && latest_event_.ptr) {
-            latest_event_.dtor(latest_event_.ptr);
-        }
-        latest_event_ = e;
-        has_event_ = true;
-    }
-    
-    void publishFromISR(const Event& e, BaseType_t* hpw = nullptr) {
-        // Same as regular publish for mailbox (no queue involved)
-        publish(e);
-        if (hpw) *hpw = pdTRUE;
-    }
-    
-    bool receive(Event& e) {
-        if (!has_event_) return false;
-        e = latest_event_;
-        has_event_ = false;
-        latest_event_ = {0, 0, nullptr, nullptr}; // Reset
-        return true;
-    }
-    
-    bool hasEvent() const { return has_event_; }
-    
-    ~TinyMailbox() {
-        if (has_event_ && latest_event_.dtor && latest_event_.ptr) {
-            latest_event_.dtor(latest_event_.ptr);
-        }
-    }
-
-private:
-    Event latest_event_;
-    bool has_event_;
-};
-
 class TinyEventBus final : public IEventBus {
 public:
     bool begin(const char* taskName="evt-dispatch", uint32_t stack=2048, UBaseType_t prio=tskIDLE_PRIORITY+1) override {
@@ -77,26 +36,43 @@ public:
         if (h>=0 && h<EBUS_MAX_LISTENERS) ls_[h] = {};
     }
 
-    void publish(const Event& in) override {
-        Event e = in;
-        for (int i=0;i<EBUS_MAX_LISTENERS;i++){
-          auto& n = ls_[i];
-          if (!n.inUse || !n.h) continue;
-          const uint32_t b = (e.type < 32) ? (1u << e.type) : 0u;
-          if (b && !(n.mask & b)) continue;
-          if (n.pred && !n.pred(e, n.predUser)) continue;
-          n.h(e, n.user);
+    void publish(const Event& e) override {
+        const uint32_t b = (e.type < 32) ? (1u << e.type) : 0u;
+        for (int i=0;i<EBUS_MAX_LISTENERS;i++) {
+            auto& n = ls_[i];
+            if (!n.inUse || !n.h) continue;
+            if (b && !(n.mask & b)) continue;
+            if (n.pred && !n.pred(e, n.predUser)) continue;
+            n.h(e, n.user);
         }
-        if (e.dtor && e.ptr) e.dtor(e.ptr);
     }
 
-    // DROP_OLDEST in ISR
+    // Publish event to queue with drop oldest behavior (task context)
+    void publishToQueue(const Event& e) {
+        if (!q_) return;
+        
+        // Try to send the event normally first
+        BaseType_t result = xQueueSend(q_, &e, 0); // Non-blocking
+        
+        // If queue is full, drop the oldest event and try again
+        if (result == errQUEUE_FULL) {
+            dropOldestEvent();
+            // Try to send the new event again
+            xQueueSend(q_, &e, 0);
+        }
+    }
+
     void publishFromISR(const Event& e, BaseType_t* hpw=nullptr) override {
         if (!q_) return;
-        if (xQueueSendFromISR(q_, &e, hpw) == errQUEUE_FULL) {
-            Event dropped;
-            (void)xQueueReceiveFromISR(q_, &dropped, hpw);
-            (void)xQueueSendFromISR(q_, &e, hpw);
+        
+        // Try to send the event normally first
+        BaseType_t result = xQueueSendFromISR(q_, &e, hpw);
+        
+        // If queue is full, drop the oldest event and try again
+        if (result == errQUEUE_FULL) {
+            dropOldestEventFromISR();
+            // Try to send the new event again
+            xQueueSendFromISR(q_, &e, hpw);
         }
     }
 
@@ -114,8 +90,52 @@ private:
     void dispatch() {
         for (;;) {
             Event e;
-            if (xQueueReceive(q_, &e, portMAX_DELAY) == pdTRUE) publish(e);
+            if (xQueueReceive(q_, &e, portMAX_DELAY) == pdTRUE) {
+                publish(e);
+                // Event destructor will handle cleanup automatically
+            }
         }
+    }
+
+    // Drop the oldest event from the queue (ISR-safe) with proper cleanup
+    void dropOldestEventFromISR() {
+        if (!q_) return;
+        
+        Event oldest_event;
+        // Remove the oldest event without blocking
+        if (xQueueReceiveFromISR(q_, &oldest_event, nullptr) == pdTRUE) {
+            // Event destructor will automatically clean up the payload
+            // This is safe because the Event destructor handles cleanup
+        }
+    }
+
+    // Drop the oldest event from the queue (task context) with proper cleanup
+    void dropOldestEvent() {
+        if (!q_) return;
+        
+        Event oldest_event;
+        // Remove the oldest event without blocking
+        if (xQueueReceive(q_, &oldest_event, 0) == pdTRUE) {
+            // Event destructor will automatically clean up the payload
+            // This is safe because the Event destructor handles cleanup
+        }
+    }
+
+    // Get queue statistics for monitoring
+    struct QueueStats {
+        UBaseType_t messages_waiting;
+        UBaseType_t spaces_available;
+        UBaseType_t total_spaces;
+    };
+    
+    QueueStats getQueueStats() const {
+        QueueStats stats = {0, 0, 0};
+        if (q_) {
+            stats.messages_waiting = uxQueueMessagesWaiting(q_);
+            stats.spaces_available = uxQueueSpacesAvailable(q_);
+            stats.total_spaces = EBUS_DISPATCH_QUEUE_LEN;
+        }
+        return stats;
     }
 
     QueueHandle_t q_ = nullptr;

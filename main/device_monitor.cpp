@@ -57,7 +57,7 @@ DeviceCommandResult DeviceMonitor::executeDeviceCommand(const DevicePinCommand& 
         return createFailureResult(command, "Invalid pin number");
     }
     
-    // Execute based on command type
+        // Execute based on command type
     switch (command.type) {
         case PIN_SET: {
             // Validate value for digital/analog operations
@@ -65,49 +65,52 @@ DeviceCommandResult DeviceMonitor::executeDeviceCommand(const DevicePinCommand& 
                 return createFailureResult(command, "Invalid pin value");
             }
             
-            // Map digital values: 0 = LOW, 1 = HIGH
+            // Determine if this is digital (0,1) or analog (0-255) write
             if (isValidDigitalValue(command.value)) {
-                bool high = (command.value == 1);
-                PinController::digital_write(command.pin, high);
-                std::string action = "Digital write: pin " + std::to_string(command.pin) + 
-                                   " = " + (high ? "HIGH" : "LOW");
-                return createSuccessResult(command, action);
+                // Digital write
+                PinController::digital_write(command.pin, command.value == 1);
+                return createSuccessResult(command, "Digital pin set successfully");
             } else {
-                // Analog value (0-255)
+                // Analog write (PWM)
                 PinController::analog_write(command.pin, command.value);
-                std::string action = "Analog write: pin " + std::to_string(command.pin) + 
-                                   " = " + std::to_string(command.value);
-                return createSuccessResult(command, action);
+                return createSuccessResult(command, "Analog pin set successfully");
             }
         }
             
         case PIN_READ: {
-            // Configure pin as input and read value
+            // Configure pin as input if needed
             PinController::configure_pin_if_needed(command.pin, GPIO_MODE_INPUT);
-            int value = gpio_get_level((gpio_num_t)command.pin);
-            std::string action = "Pin read: pin " + std::to_string(command.pin) + 
-                               " = " + std::to_string(value);
-            return DeviceCommandResult::success_result(action, command.pin, value);
+            
+            // Read digital value from pin
+            int pin_value = gpio_get_level((gpio_num_t)command.pin);
+            
+            // Return result with actual read value
+            return DeviceCommandResult::success_result("Pin read successfully", command.pin, pin_value);
         }
             
         case PIN_MODE: {
             if (!isValidDigitalValue(command.value)) {
                 return createFailureResult(command, "Invalid mode value (0=INPUT, 1=OUTPUT)");
             }
+            
             // Set pin mode: 0 = INPUT, 1 = OUTPUT
-            gpio_mode_t mode = (command.value == 0) ? GPIO_MODE_INPUT : GPIO_MODE_OUTPUT;
+            gpio_mode_t mode = (command.value == 1) ? GPIO_MODE_OUTPUT : GPIO_MODE_INPUT;
             PinController::configure_pin_if_needed(command.pin, mode);
-            std::string action = "Pin mode set: pin " + std::to_string(command.pin) + 
-                               " = " + (mode == GPIO_MODE_INPUT ? "INPUT" : "OUTPUT");
-            return createSuccessResult(command, action);
+            
+            std::string mode_desc = (command.value == 1) ? "OUTPUT" : "INPUT";
+            return createSuccessResult(command, "Pin mode set to " + mode_desc);
         }
-            
-        case DEVICE_STATUS:
+        
+        case DEVICE_STATUS: {
+            // Return device status information
             return createSuccessResult(command, "Device status requested");
-            
-        case DEVICE_RESET:
+        }
+        
+        case DEVICE_RESET: {
+            // Return device reset information
             return createSuccessResult(command, "Device reset requested");
-            
+        }
+        
         default:
             return createFailureResult(command, "Unknown command type");
     }
@@ -123,31 +126,4 @@ std::vector<DeviceCommandResult> DeviceMonitor::executeDeviceCommands(const std:
     }
     
     return results;
-}
-
-// Safe mode: set all outputs to safe state
-void DeviceMonitor::allOutputsSafe() {
-    ESP_LOGI(TAG, "Setting all outputs to safe state");
-    
-    // Set all configured output pins to LOW (safe state)
-    // This is a simplified implementation - in a real system you'd have a list of output pins
-    const int output_pins[] = {2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
-    const int num_pins = sizeof(output_pins) / sizeof(output_pins[0]);
-    
-    for (int i = 0; i < num_pins; i++) {
-        int pin = output_pins[i];
-        if (isValidPin(pin)) {
-            // Configure as output if not already
-            PinController::configure_pin_if_needed(pin, GPIO_MODE_OUTPUT);
-            // Set to LOW (safe state)
-            PinController::digital_write(pin, false);
-            ESP_LOGI(TAG, "Set pin %d to LOW (safe state)", pin);
-        }
-    }
-    
-    // Note: In a real implementation, you might also:
-    // - Stop any PWM outputs
-    // - Stop any pattern playback
-    // - Disable any motor drivers
-    // - Set relays to safe positions
 }
