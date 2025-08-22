@@ -5,7 +5,7 @@
 #include "data_structures.h"
 #include "message_processor.h"
 #include "device_monitor.h"
-#include "custom_mqtt_client.h"
+#include "mqtt_client_local.h"
 #include "system_state.h"
 #include <stdio.h>
 #include <string.h>
