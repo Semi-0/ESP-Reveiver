@@ -23,7 +23,8 @@ static esp_mqtt_client_handle_t mqtt_client = nullptr;
 void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
     
-    ESP_LOGI(TAG, "MQTT Event received: event_id=%d, base=%d", event_id, base);
+    // Log event id only to avoid incorrect formatting of base
+    ESP_LOGI(TAG, "MQTT Event received: event_id=%d", event_id);
     
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
@@ -49,13 +50,18 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             break;
             
         case MQTT_EVENT_DATA: {
-            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Received message on topic: %s", event->topic);
+            // Safely construct topic/payload strings using explicit lengths
+            std::string topic(event->topic, event->topic_len);
+            std::string payload(event->data, event->data_len);
+
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Received message on topic: %s", topic.c_str());
             ESP_LOGI(TAG, "MQTT_EVENT_DATA: Message length: %d", event->data_len);
-            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Message payload: %s", event->data);
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA: Message payload: %s", payload.c_str());
+
             // Create message data
             MqttMessageData message_data;
-            message_data.topic = std::string(event->topic, event->topic_len);
-            message_data.payload = std::string(event->data, event->data_len);
+            message_data.topic = topic;
+            message_data.payload = payload;
             message_data.qos = event->qos;
             
             // Call message callback if set
